@@ -59,14 +59,32 @@ async def startup_event():
     scheduler.attach_subscriptions(subscriptions)
     admin_token_env_name = config.admin_token_env
 
-    # Kick off background discovery to populate offices cache
+    # Log configured offices
+    configured = [{"name": o.name, "url": o.url} for o in scheduler.config.offices]
+    print(f"Configured offices: {len(configured)}")
+    for o in configured:
+        print(f"CONFIGURED_OFFICE: {o['name']} | {o['url']}")
+
+    # Kick off background discovery to populate offices cache and log results
     async def _load_offices_bg():
+        nonlocal configured
         try:
             discovered = await discover_offices_playwright()
+            # cache
             offices_cache = discovered  # type: ignore[assignment]
-        except Exception:
-            # Best-effort; keep running without discovery
-            offices_cache = []  # type: ignore[assignment]
+            print(f"Discovered offices: {len(discovered)}")
+            for o in discovered:
+                print(f"DISCOVERED_OFFICE: {o['name']} | {o['url']}")
+            # merged view (unique by name; prefer configured urls)
+            by_name = {o["name"]: o for o in discovered}
+            for o in configured:
+                by_name[o["name"]] = o
+            merged = [by_name[k] for k in sorted(by_name.keys())]
+            print(f"All offices (merged): {len(merged)}")
+            for o in merged:
+                print(f"ALL_OFFICE: {o['name']} | {o['url']}")
+        except Exception as e:
+            print(f"Office discovery failed: {e}")
 
     asyncio.create_task(_load_offices_bg())
 
