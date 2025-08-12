@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache/
+.mypy_cache/
+.pytype/
+
+# Env & local state
+.env
+.env.*
+state.json
+
+# Virtual envs
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+trace.zip
+
+# IDE
+.idea/
+.vscode/

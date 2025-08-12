@@ -1,0 +1,34 @@
+checker: playwright
+settings:
+  check_interval_seconds: 5
+  max_concurrent_checks: 3
+  headless: true
+  timezone: America/New_York
+  state_file: state.json
+  state_ttl_hours: 12
+notifiers:
+  discord:
+    enabled: true
+    webhook_env: DISCORD_WEBHOOK_URL
+  sms:
+    enabled: false
+    account_sid_env: TWILIO_ACCOUNT_SID
+    auth_token_env: TWILIO_AUTH_TOKEN
+    from_number_env: TWILIO_FROM_NUMBER
+    test_to_number_env: TWILIO_TEST_TO_NUMBER
+  email:
+    enabled: false
+    smtp_host_env: SMTP_HOST
+    smtp_port_env: SMTP_PORT
+    smtp_user_env: SMTP_USERNAME
+    smtp_pass_env: SMTP_PASSWORD
+    from_email_env: SMTP_FROM_EMAIL
+    test_to_email_env: SMTP_TEST_TO_EMAIL
+    use_tls_env: SMTP_USE_TLS
+    use_ssl_env: SMTP_USE_SSL
+admin_token_env: NCVIP_ADMIN_TOKEN
+offices:
+  - name: Raleigh - Avent Ferry Road
+    url: "https://skiptheline.ncdot.gov/webapp/#/location/Raleigh-Avent-Ferry"
+  - name: Durham - South Driver License Office
+    url: "https://skiptheline.ncdot.gov/webapp/#/location/Durham-South"

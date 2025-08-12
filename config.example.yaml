@@ -1,0 +1,24 @@
+# Which checker to use: playwright or browseruse
+checker: playwright
+
+# Global settings
+settings:
+  check_interval_seconds: 5
+  max_concurrent_checks: 3
+  headless: true
+  timezone: America/New_York
+  state_file: state.json
+  state_ttl_hours: 12
+
+# Discord notifier
+notifiers:
+  discord:
+    enabled: true
+    webhook_env: DISCORD_WEBHOOK_URL
+
+# Offices to watch. Preferred: direct booking URLs for specific offices.
+offices:
+  - name: Raleigh - Avent Ferry Road
+    url: "https://skiptheline.ncdot.gov/webapp/#/location/Raleigh-Avent-Ferry"
+  - name: Durham - South Driver License Office
+    url: "https://skiptheline.ncdot.gov/webapp/#/location/Durham-South"
