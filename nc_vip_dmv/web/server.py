@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -34,10 +34,13 @@ scheduler: Optional[Scheduler] = None
 subscriptions: Optional[SubscriptionsStore] = None
 admin_token_env_name: Optional[str] = None
 
+# Cached discovered offices
+offices_cache: List[Dict[str, str]] = []
+
 
 @app.on_event("startup")
 async def startup_event():
-    global scheduler, subscriptions, admin_token_env_name
+    global scheduler, subscriptions, admin_token_env_name, offices_cache
     config = load_config(CONFIG_PATH)
 
     # Optional env overrides for notifier enabled flags
@@ -55,7 +58,19 @@ async def startup_event():
     subscriptions = SubscriptionsStore(path=config.settings.subscriptions_file)
     scheduler.attach_subscriptions(subscriptions)
     admin_token_env_name = config.admin_token_env
-    # run in background
+
+    # Kick off background discovery to populate offices cache
+    async def _load_offices_bg():
+        try:
+            discovered = await discover_offices_playwright()
+            offices_cache = discovered  # type: ignore[assignment]
+        except Exception:
+            # Best-effort; keep running without discovery
+            offices_cache = []  # type: ignore[assignment]
+
+    asyncio.create_task(_load_offices_bg())
+
+    # run scheduler in background
     asyncio.create_task(scheduler.run(checker_override=CHECKER, run_once=False))
 
 
@@ -72,11 +87,21 @@ async def api_results():
 
 
 @app.get("/api/offices")
-async def api_offices():
+async def api_offices(source: Optional[str] = Query(default="all", description="configured|discovered|all")):
     if scheduler is None:
         return JSONResponse({"error": "scheduler_not_ready"}, status_code=503)
-    offices = [{"name": o.name, "url": o.url} for o in scheduler.config.offices]
-    return {"offices": offices}
+    configured = [{"name": o.name, "url": o.url} for o in scheduler.config.offices]
+    discovered = offices_cache or []
+    if source == "configured":
+        return {"offices": configured}
+    if source == "discovered":
+        return {"offices": discovered}
+    # Merge unique by name (prefer configured URL when duplicate)
+    by_name: Dict[str, Dict[str, str]] = {o["name"]: o for o in discovered}
+    for o in configured:
+        by_name[o["name"]] = o
+    merged = [by_name[k] for k in sorted(by_name.keys())]
+    return {"offices": merged}
 
 
 @app.get("/api/subscriptions")
@@ -98,7 +123,7 @@ async def upsert_subscription(payload: dict):
     if not email or not isinstance(offices, list):
         raise HTTPException(status_code=400, detail="invalid_payload")
     # validate offices
-    known = {o.name for o in scheduler.config.offices} if scheduler else set()
+    known = {o["name"] for o in (offices_cache or [])} | ({o.name for o in scheduler.config.offices} if scheduler else set())
     for off in offices:
         if off not in known:
             raise HTTPException(status_code=400, detail=f"unknown_office: {off}")
@@ -153,7 +178,11 @@ async def api_test_email(authorization: Optional[str] = Header(default=None)):
     if provided != expected_token:
         raise HTTPException(status_code=403, detail="invalid_token")
 
-    await scheduler._notify_email(office_name="TEST", office_url=None, signature="Test email from NC VIP-DMV")
+    # Use configured test email as recipient for this admin-triggered test
+    to_email = os.getenv(scheduler.config.notifiers.email.test_to_email_env, "").strip()
+    if not to_email:
+        raise HTTPException(status_code=400, detail="missing_test_to_email_env")
+    await scheduler._notify_email_to(to_email, office_name="TEST", office_url=None, signature="Test email from NC VIP-DMV")
     return {"ok": True}
 
 
@@ -163,7 +192,6 @@ async def admin_discover_offices(authorization: Optional[str] = Header(default=N
     if not expected_token or authorization != f"Bearer {expected_token}":
         raise HTTPException(status_code=403, detail="forbidden")
     offices = await discover_offices_playwright()
-    # For safety, we only return them; you can copy into config.yaml manually for now
     return {"offices": offices, "count": len(offices)}
 
 
