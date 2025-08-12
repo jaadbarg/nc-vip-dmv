@@ -105,6 +105,7 @@ class Scheduler:
                     "available": result.available,
                     "count": len(signatures),
                     "samples": signatures[:5],
+                    "status": (result.raw_snapshot_text or "")[:300],
                 })
                 self._handle_result(result.office_name, result.office_url, result.available, signatures)
             except Exception as e:
@@ -135,6 +136,7 @@ class Scheduler:
                     "available": result.available,
                     "count": len(signatures),
                     "samples": signatures[:5],
+                    "status": (result.raw or "")[:300],
                 })
                 self._handle_result(result.office_name, result.office_url, result.available, signatures)
             except Exception as e:

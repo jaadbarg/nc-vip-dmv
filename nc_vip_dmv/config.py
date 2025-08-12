@@ -52,6 +52,7 @@ class SettingsConfig(BaseModel):
     state_file: str = "state.json"
     state_ttl_hours: int = 12
     subscriptions_file: str = "subscriptions.json"
+    scan_from_locations_page: bool = True
 
 
 class AppConfig(BaseModel):

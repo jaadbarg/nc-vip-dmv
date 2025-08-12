@@ -5,13 +5,13 @@ from urllib.parse import urljoin
 
 from playwright.async_api import async_playwright
 
-BASE = "https://skiptheline.ncdot.gov/webapp/#/"
+BASE = "https://skiptheline.ncdot.gov/"
 
 
 async def discover_offices_playwright() -> List[Dict[str, str]]:
-    """Discover all office names and URLs by crawling the main listings.
+    """Discover office names (and URLs if available) from the SPA locations page.
 
-    Returns a list of {"name": str, "url": str}.
+    Returns a list of {"name": str, "url": str | ""}.
     """
     results: dict[str, str] = {}
     async with async_playwright() as pw:
@@ -19,30 +19,63 @@ async def discover_offices_playwright() -> List[Dict[str, str]]:
         context = await browser.new_context()
         page = await context.new_page()
         try:
-            # Try common landing pages
-            for path in ["", "locations"]:
-                url = BASE + path
-                await page.goto(url, wait_until="domcontentloaded")
+            url = BASE
+            await page.goto(url, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+
+            # From the root, click into making an appointment / locations flow
+            started = False
+            for sel in [
+                "role=link[name*='Make an Appointment' i]",
+                "role=button[name*='Make an Appointment' i]",
+                "text=/Make an Appointment/i",
+                "role=link[name*='Start' i]",
+                "text=/Start/i",
+            ]:
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=8000)
+                    el = page.locator(sel).first
+                    await el.wait_for(timeout=2000)
+                    await el.click()
+                    started = True
+                    break
+                except Exception:
+                    continue
+
+            if started:
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
                 except Exception:
                     pass
-                anchors = await page.locator('a[href*="#/location/"]').all()
-                for a in anchors:
-                    href = await a.get_attribute("href")
-                    name = (await a.inner_text() or "").strip()
-                    if not href:
+
+            # Cards are rendered in a grid; collect visible text and hrefs (if any exist)
+            cards = await page.locator('a[href*="#/location/"]').all()
+            if cards:
+                for a in cards:
+                    try:
+                        href = await a.get_attribute("href")
+                        name = (await a.inner_text() or "").strip()
+                    except Exception:
                         continue
-                    if href.startswith("#/location/"):
-                        full = urljoin(BASE, href)
-                    elif "/location/" in href:
-                        full = href
-                    else:
-                        continue
-                    # Prefer meaningful text; fallback to last path segment
                     if not name:
-                        name = full.rsplit("/", 1)[-1].replace("-", " ")
+                        continue
+                    full = urljoin(BASE, href) if href else ""
                     results[name] = full
+            else:
+                # Fallback: read any card-like containers and pull their titles
+                containers = page.locator("div, a, button").all()
+                for el in containers:
+                    try:
+                        t = (await el.inner_text()).strip()
+                    except Exception:
+                        continue
+                    if not t or len(t) > 120:
+                        continue
+                    # Heuristic: title case single-line likely is the office name
+                    if "\n" not in t and t[:1].isupper():
+                        results.setdefault(t, "")
         finally:
             await context.close()
             await browser.close()

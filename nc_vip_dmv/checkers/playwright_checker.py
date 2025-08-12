@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_fixed
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, TimeoutError as PWTimeout
+
+BASE_URL = "https://skiptheline.ncdot.gov/"
 
 
 @dataclass
@@ -53,7 +55,7 @@ class PlaywrightChecker:
 
         page = await self._context.new_page()
         try:
-            text = await self._visit_and_snapshot(page, office_url)
+            text = await self._visit_and_snapshot_spa(page, office_name, office_url)
             slots = self._extract_slots(text)
             available = len(slots) > 0 and ("no appointments" not in text.lower())
             return AvailabilityResult(
@@ -66,44 +68,132 @@ class PlaywrightChecker:
         finally:
             await page.close()
 
-    async def _visit_and_snapshot(self, page: Page, url: Optional[str]) -> str:
-        if not url:
-            # If no direct URL provided, fall back to a neutral page
-            return ""
+    async def _visit_and_snapshot_spa(self, page: Page, office_name: str, office_url: Optional[str]) -> str:
+        # Open root only (UUID flow must be created by the site)
+        await page.goto(BASE_URL, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
 
-        # Retry a few times in case of flakiness
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(3), wait=wait_fixed(2), reraise=True
-        ):
-            with attempt:
-                await page.goto(url, wait_until="domcontentloaded")
-                # Give single-page apps time to fetch data
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=8000)
-                except Exception:
-                    pass
-                # Grab visible text content from the page
-                content = await page.content()
-                # Also try evaluating document.body.innerText for readable text
-                try:
-                    text = await page.evaluate("() => document.body.innerText")
-                except Exception:
-                    text = ""
-                return f"{text}\n\n---\nHTML_SNIPPET:\n{content[:5000]}"
+        # Click "Make an Appointment" (or similar) to start a fresh session (UUID route)
+        start_clicked = False
+        start_selectors = [
+            "role=link[name*='Make an Appointment' i]",
+            "role=button[name*='Make an Appointment' i]",
+            "text=/Make an Appointment/i",
+            "role=link[name*='Start' i]",
+            "text=/Start/i",
+        ]
+        for sel in start_selectors:
+            try:
+                el = page.locator(sel).first
+                await el.wait_for(timeout=3000)
+                await el.click()
+                start_clicked = True
+                break
+            except Exception:
+                continue
 
-        return ""
+        # Accept/lightweight consent if present
+        if start_clicked:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            for consent_sel in [
+                "role=button[name=/I (agree|accept)/i]",
+                "text=/I (agree|accept)/i",
+                "role=button[name=/Continue/i]",
+                "text=/Continue/i",
+            ]:
+                try:
+                    el = page.locator(consent_sel).first
+                    await el.wait_for(timeout=1500)
+                    await el.click()
+                except Exception:
+                    continue
+
+        # Find and open the office by name
+        normalized = office_name.strip().lower()
+
+        # Try typing into a search field first
+        tried_search = False
+        try:
+            input_candidates = [
+                "input[placeholder*='search' i]",
+                "input[aria-label*='search' i]",
+                "input[type='search']",
+            ]
+            for inp_sel in input_candidates:
+                inp = page.locator(inp_sel).first
+                await inp.wait_for(timeout=2000)
+                await inp.fill(office_name)
+                await inp.press("Enter")
+                tried_search = True
+                break
+        except Exception:
+            pass
+
+        # If no search or no result click, try clicking a matching element directly
+        clicked = False
+        candidates = [
+            f"role=link[name*='{office_name}']",
+            f"role=button[name*='{office_name}']",
+            f"text=/{re.escape(office_name)}/i",
+        ]
+        for sel in candidates:
+            try:
+                el = page.locator(sel).first
+                await el.wait_for(timeout=3000)
+                await el.click()
+                clicked = True
+                break
+            except Exception:
+                continue
+
+        if not clicked:
+            # Fallback: scan all clickable-like elements and fuzzy-match text
+            elements = page.locator("a, button, div, li").all()
+            for el in elements:
+                try:
+                    t = (await el.inner_text()).strip()
+                except Exception:
+                    continue
+                if not t:
+                    continue
+                if normalized in t.lower():
+                    try:
+                        await el.click()
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+
+        # Wait a moment for appointment times to render, then snapshot
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+
+        try:
+            text = await page.evaluate("() => document.body.innerText")
+        except Exception:
+            text = ""
+        try:
+            html = await page.content()
+        except Exception:
+            html = ""
+        return f"{text}\n\n---\nHTML_SNIPPET:\n{html[:5000]}"
 
     def _extract_slots(self, text: str) -> List[Slot]:
         if not text:
             return []
-
-        # Heuristic: find typical time patterns; capture lines around them as labels
         time_pattern = re.compile(r"\b(\d{1,2}):(\d{2})\s?(AM|PM)\b", re.IGNORECASE)
         lines = text.splitlines()
         slots: List[Slot] = []
         for idx, line in enumerate(lines):
             if time_pattern.search(line):
-                # Try to assemble a nearby date label
                 window = " ".join(lines[max(0, idx - 2) : min(len(lines), idx + 3)])
                 date_match = re.search(r"\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b.*?\b(\d{1,2}/\d{1,2}/\d{2,4}|\w+\s+\d{1,2},\s*\d{4})", window, re.IGNORECASE)
                 time_match = time_pattern.search(line)

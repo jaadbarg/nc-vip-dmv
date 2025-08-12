@@ -1,4 +1,4 @@
-checker: playwright
+checker: browseruse
 settings:
   check_interval_seconds: 5
   max_concurrent_checks: 3
